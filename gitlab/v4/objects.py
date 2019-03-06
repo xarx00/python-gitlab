@@ -4038,3 +4038,6 @@ class GeoNodeManager(RetrieveMixin, UpdateMixin, DeleteMixin, RESTManager):
             list: The list of failures
         """
         return self.gitlab.http_list('/geo_nodes/current/failures', **kwargs)
+
+
+from gitlab.v4.tree_obj import *
