@@ -879,7 +879,7 @@ class GroupVariableManager(CRUDMixin, RESTManager):
 
 
 class Group(SaveMixin, ObjectDeleteMixin, RESTObject):
-    _short_print_attr = 'name'
+    _short_print_attr = 'full_path'
     _managers = (
         ('accessrequests', 'GroupAccessRequestManager'),
         ('badges', 'GroupBadgeManager'),
@@ -4040,4 +4040,4 @@ class GeoNodeManager(RetrieveMixin, UpdateMixin, DeleteMixin, RESTManager):
         return self.gitlab.http_list('/geo_nodes/current/failures', **kwargs)
 
 
-from gitlab.v4.tree_obj import *
+from gitlab.v4.bulk import *

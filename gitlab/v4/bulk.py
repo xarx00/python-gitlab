@@ -11,43 +11,43 @@ from gitlab import types
 from gitlab import utils
 
 
-class Tree(RESTObject):
+class Bulk(RESTObject):
     _id_attr = None
 
 
-class TreeManager(ListMixin, RESTManager):
+class BulkManager(RESTManager):
     """Manager for work with the groups and projects hierarchy.
 
     This manager doesn't actually manage objects but provides helper functions
     for bulk operations over projects under a specified group.
     """
     _path = ''
-    _obj_cls = Tree
+    _obj_cls = Bulk
 
-    @cli.register_custom_action('TreeManager', ('full-path', ))
+    @cli.register_custom_action('BulkManager', tuple(), ('full-path', ))
+    @exc.on_http_error(exc.GitlabGetError)
+    def test(self, **kwargs):
+        gl = self.gitlab
+
+        group = gl.bulk.group(full_path=kwargs['full_path'])
+        print(group.subgroups.list())
+
+
+    @cli.register_custom_action('BulkManager', ('full-path', ))
     @exc.on_http_error(exc.GitlabGetError)
     def group(self, **kwargs):
         gl = self.gitlab
 
-        grpath = kwargs['full-path']
+        grpath = kwargs['full_path']
         grname = grpath[grpath.rfind('/')+1:]
-        groups = gl.groups.list(search=grname, all-available=True)
+        groups = gl.groups.list(search=grname, all_available=True)
         for group in groups:
             if group.full_path == grpath:
                 return group
         raise exc.GitlabGetError(404)
-
-
-        print(groups)
-        groups = groups[1].subgroups.list()
-        print(groups)
-        grp = groups[5]
-        print(grp)
-        groups = grp.subgroups.list()
-        print(groups)
         
 
-    @cli.register_custom_action('TreeManager', ('full-path', ))
+    @cli.register_custom_action('BulkManager', ('full-path', ))
     @exc.on_http_error(exc.GitlabGetError)
     def status(self, **kwargs):
         """Get the status of all the geo nodes.
@@ -64,4 +64,3 @@ class TreeManager(ListMixin, RESTManager):
         """
 #        return self.gitlab.http_list('/geo_nodes/status', **kwargs)
         return self.gitlab.groups.list()
-
