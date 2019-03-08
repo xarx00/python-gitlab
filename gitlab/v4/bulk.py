@@ -31,6 +31,8 @@ class BulkManager(RESTManager):
 
         group = gl.bulk.group(full_path=kwargs['full_path'])
         print(group.subgroups.list())
+        subgrps = group.subgroups.list()[1].subgroups.list()
+        print(subgrps)
 
 
     @cli.register_custom_action('BulkManager', ('full-path', ))

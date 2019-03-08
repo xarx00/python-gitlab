@@ -841,31 +841,6 @@ class GroupNotificationSettingsManager(NotificationSettingsManager):
     _from_parent_attrs = {'group_id': 'id'}
 
 
-class GroupProject(RESTObject):
-    pass
-
-
-class GroupProjectManager(ListMixin, RESTManager):
-    _path = '/groups/%(group_id)s/projects'
-    _obj_cls = GroupProject
-    _from_parent_attrs = {'group_id': 'id'}
-    _list_filters = ('archived', 'visibility', 'order_by', 'sort', 'search',
-                     'ci_enabled_first', 'simple', 'owned', 'starred',
-                     'with_custom_attributes')
-
-
-class GroupSubgroup(RESTObject):
-    pass
-
-
-class GroupSubgroupManager(ListMixin, RESTManager):
-    _path = '/groups/%(group_id)s/subgroups'
-    _obj_cls = GroupSubgroup
-    _from_parent_attrs = {'group_id': 'id'}
-    _list_filters = ('skip_groups', 'all_available', 'search', 'order_by',
-                     'sort', 'statistics', 'owned', 'with_custom_attributes')
-
-
 class GroupVariable(SaveMixin, ObjectDeleteMixin, RESTObject):
     _id_attr = 'key'
 
@@ -896,7 +871,8 @@ class Group(SaveMixin, ObjectDeleteMixin, RESTObject):
         ('variables', 'GroupVariableManager'),
     )
 
-    @cli.register_custom_action('Group', ('to_project_id', ))
+    @cli.register_custom_action(('Group', 'GroupSubgroup'),
+                                ('to_project_id', ))
     @exc.on_http_error(exc.GitlabTransferProjectError)
     def transfer_project(self, to_project_id, **kwargs):
         """Transfer a project to this group.
@@ -912,7 +888,8 @@ class Group(SaveMixin, ObjectDeleteMixin, RESTObject):
         path = '/groups/%s/projects/%s' % (self.id, to_project_id)
         self.manager.gitlab.http_post(path, **kwargs)
 
-    @cli.register_custom_action('Group', ('scope', 'search'))
+    @cli.register_custom_action(('Group', 'GroupSubgroup'),
+                                ('scope', 'search'))
     @exc.on_http_error(exc.GitlabSearchError)
     def search(self, scope, search, **kwargs):
         """Search the group resources matching the provided string.'
@@ -933,7 +910,8 @@ class Group(SaveMixin, ObjectDeleteMixin, RESTObject):
         path = '/groups/%s/search' % self.get_id()
         return self.manager.gitlab.http_list(path, query_data=data, **kwargs)
 
-    @cli.register_custom_action('Group', ('cn', 'group_access', 'provider'))
+    @cli.register_custom_action(('Group', 'GroupSubgroup'),
+                                ('cn', 'group_access', 'provider'))
     @exc.on_http_error(exc.GitlabCreateError)
     def add_ldap_group_link(self, cn, group_access, provider, **kwargs):
         """Add an LDAP group link.
@@ -953,7 +931,8 @@ class Group(SaveMixin, ObjectDeleteMixin, RESTObject):
         data = {'cn': cn, 'group_access': group_access, 'provider': provider}
         self.manager.gitlab.http_post(path, post_data=data, **kwargs)
 
-    @cli.register_custom_action('Group', ('cn',), ('provider',))
+    @cli.register_custom_action(('Group', 'GroupSubgroup'),
+                                ('cn',), ('provider',))
     @exc.on_http_error(exc.GitlabDeleteError)
     def delete_ldap_group_link(self, cn, provider=None, **kwargs):
         """Delete an LDAP group link.
@@ -973,7 +952,7 @@ class Group(SaveMixin, ObjectDeleteMixin, RESTObject):
         path += '/%s' % cn
         self.manager.gitlab.http_delete(path)
 
-    @cli.register_custom_action('Group')
+    @cli.register_custom_action(('Group', 'GroupSubgroup'))
     @exc.on_http_error(exc.GitlabCreateError)
     def ldap_sync(self, **kwargs):
         """Sync LDAP groups.
@@ -4038,6 +4017,33 @@ class GeoNodeManager(RetrieveMixin, UpdateMixin, DeleteMixin, RESTManager):
             list: The list of failures
         """
         return self.gitlab.http_list('/geo_nodes/current/failures', **kwargs)
+
+
+
+
+class GroupProject(Project):
+    pass
+
+
+class GroupProjectManager(ListMixin, RESTManager):
+    _path = '/groups/%(group_id)s/projects'
+    _obj_cls = GroupProject
+    _from_parent_attrs = {'group_id': 'id'}
+    _list_filters = ('archived', 'visibility', 'order_by', 'sort', 'search',
+                     'ci_enabled_first', 'simple', 'owned', 'starred',
+                     'with_custom_attributes')
+
+
+class GroupSubgroup(Group):
+    pass
+
+
+class GroupSubgroupManager(ListMixin, RESTManager):
+    _path = '/groups/%(group_id)s/subgroups'
+    _obj_cls = GroupSubgroup
+    _from_parent_attrs = {'group_id': 'id'}
+    _list_filters = ('skip_groups', 'all_available', 'search', 'order_by',
+                     'sort', 'statistics', 'owned', 'with_custom_attributes')
 
 
 from gitlab.v4.bulk import *
