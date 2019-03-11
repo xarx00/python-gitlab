@@ -3219,7 +3219,7 @@ class ProjectImportManager(GetWithoutIdMixin, RESTManager):
 
 
 class Project(SaveMixin, ObjectDeleteMixin, RESTObject):
-    _short_print_attr = 'path'
+    _short_print_attr = 'path_with_namespace'
     _managers = (
         ('accessrequests', 'ProjectAccessRequestManager'),
         ('approvals', 'ProjectApprovalManager'),

@@ -83,7 +83,8 @@ class GitlabCLI(object):
             method_name = self.action.replace('-', '_')
             return getattr(o, method_name)(**self.args)
         else:
-            return getattr(self.mgr, self.action)(**self.args)
+            method_name = self.action.replace('-', '_')
+            return getattr(self.mgr, method_name)(**self.args)
 
     def do_project_export_download(self):
         try:

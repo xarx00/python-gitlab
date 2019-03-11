@@ -74,7 +74,8 @@ class Gitlab(object):
     def __init__(self, url, private_token=None, oauth_token=None, email=None,
                  password=None, ssl_verify=True, http_username=None,
                  http_password=None, timeout=None, api_version='4',
-                 session=None, per_page=None):
+                 session=None, per_page=None, remote_name=None,
+                 workdir_path=None, workdir_group=None):
 
         self._api_version = str(api_version)
         self._server_version = self._server_revision = None
@@ -102,6 +103,10 @@ class Gitlab(object):
         self.session = session or requests.Session()
 
         self.per_page = per_page
+
+        self.remote_name = remote_name
+        self.workdir_path = workdir_path
+        self.workdir_group = workdir_group
 
         objects = importlib.import_module('gitlab.v%s.objects' %
                                           self._api_version)
@@ -188,7 +193,9 @@ class Gitlab(object):
                    http_username=config.http_username,
                    http_password=config.http_password,
                    api_version=config.api_version,
-                   per_page=config.per_page)
+                   per_page=config.per_page, workdir_path=config.base_path,
+                   remote_name=config.gitlab_id,
+                   workdir_group=config.base_group)
 
     def auth(self):
         """Performs an authentication.

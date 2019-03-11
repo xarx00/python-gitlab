@@ -19,10 +19,24 @@ import os
 
 from six.moves import configparser
 
+_WORKDIR_CONFIG_ALIAS = '-'
 _DEFAULT_FILES = [
     '/etc/python-gitlab.cfg',
     os.path.expanduser('~/.python-gitlab.cfg')
 ]
+
+
+def _get_path_ancestors(path):
+    """Returns list of the path and its ancestor paths in descending order.
+    """
+    ancestors = []
+    while True:
+        ancestors.append(path)
+        spl = os.path.split(path)
+        if not spl[1]:
+            break
+        path = spl[0]
+    return ancestors
 
 
 class ConfigError(Exception):
@@ -44,6 +58,16 @@ class GitlabConfigMissingError(ConfigError):
 class GitlabConfigParser(object):
     def __init__(self, gitlab_id=None, config_files=None):
         self.gitlab_id = gitlab_id
+        self.base_path = None
+        if _WORKDIR_CONFIG_ALIAS in config_files:
+            config_files = [f for f in config_files
+                            if f != _WORKDIR_CONFIG_ALIAS]
+            wd_files = [f for d in _get_path_ancestors(os.getcwd())
+                      for f in (d+'/.python-gitlab.cfg', d+'/.gitlab')
+                      if os.path.isfile(f)]
+            if wd_files:
+                self.base_path = os.path.dirname(wd_files[0])
+                config_files = wd_files + config_files
         _files = config_files or _DEFAULT_FILES
         file_exist = False
         for file in _files:
@@ -167,3 +191,11 @@ class GitlabConfigParser(object):
         if self.per_page is not None and not 0 <= self.per_page <= 100:
             raise GitlabDataError("Unsupported per_page number: %s" %
                                   self.per_page)
+
+        self.base_group = None
+        if self.base_path:
+            # Only when workdir config used
+            try:
+                self.base_group = self._config.get('global', 'base_group')
+            except Exception:
+                pass
