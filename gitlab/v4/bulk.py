@@ -11,7 +11,7 @@ from gitlab import types
 from gitlab import utils
 import os
 from six.moves import configparser
-import pygit2
+import git
 import re
 
 
@@ -183,7 +183,7 @@ class BulkManager(RESTManager):
 
     def _get_projects(self, group_path=None):
         return [
-              (wdpath, self.get_grpath(wdpath), pygit2.Repository(wdpath))
+              (wdpath, self.get_grpath(wdpath), git.Repo(wdpath))
               for wdpath in self.wdprojects(group_path=group_path)]
 
 
@@ -209,15 +209,15 @@ class BulkManager(RESTManager):
         remote_name = self.gitlab.remote_name
         for (wdpath, prpath, repo) in projects:
             try:
-                remote = repo.remotes['origin']
+                remote = repo.remote('origin')
                 check_remote(remote, wdpath, prpath)
-            except KeyError:
+            except ValueError:
                 errors[prpath].append("Remote alias 'origin' is not set.")
             try:
                 if remote_name != 'origin':
-                    remote = repo.remotes[remote_name]
+                    remote = repo.remote(remote_name)
                     check_remote(remote, wdpath, prpath)
-            except KeyError:
+            except ValueError:
                 errors[prpath].append("Remote alias '%s' is not set." %
                                       remote_name)
             #TODO: more tests
@@ -231,7 +231,7 @@ class BulkManager(RESTManager):
 
         errors = self.errors(group_path=group_path, _projects=projects).keys()
         modified = [prpath for (wdpath, prpath, repo) in projects
-                    if repo.status()]
+                    if repo.is_dirty()]
         if no_remote:
             local_only = remote_only = None
         else:
@@ -287,7 +287,21 @@ class BulkManager(RESTManager):
 
     @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
     def fetch(self, group_path=None, **kwargs):
-        pass
+        projects = self._get_projects(group_path=group_path)
+        errors = {prpath:[] for (wdpath, prpath, repo) in projects}
+        
+        remote_name = self.gitlab.remote_name
+        for (wdpath, prpath, repo) in projects:
+            try:
+                remote = repo.remote(remote_name)
+                remote.fetch()
+            except ValueError:
+                errors[prpath].append("Remote alias '%s' is not set." %
+                                      remote_name)
+            except Exception as e:
+                errors[prpath].append('%s: %s' % (e.__class__.__name__, str(e)))
+
+        return {prpath:errs for prpath, errs in errors.items() if errs}
 
 
     @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))

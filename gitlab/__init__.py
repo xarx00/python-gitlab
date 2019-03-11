@@ -137,7 +137,6 @@ class Gitlab(object):
         self.features = objects.FeatureManager(self)
         self.pagesdomains = objects.PagesDomainManager(self)
         self.user_activities = objects.UserActivitiesManager(self)
-        self.bulk = objects.BulkManager(self)
 
     def __enter__(self):
         return self
