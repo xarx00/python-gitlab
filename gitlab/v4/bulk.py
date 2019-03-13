@@ -266,32 +266,43 @@ class BulkManager(RESTManager):
             except ValueError:
                 errors[prpath].append("Remote alias '%s' is not set." %
                                       remote_name)
-            #TODO: more tests
+            #TODO: project on other branch;...
         return {prpath:errs for prpath, errs in errors.items() if errs}
 
 
     @cli.register_custom_action('BulkManager', tuple(),
-                                ('group-path', 'no-remote'))
-    def status(self, group_path=None, no_remote=False, **kwargs):
+                                ('group-path', 'no-remote', 'branch'))
+    def status(self, group_path=None, no_remote=False, branch='master',
+               **kwargs):
         projects = self._get_projects(group_path=group_path)
 
         errors = self.errors(group_path=group_path, _projects=projects).keys()
         modified = [prpath for (wdpath, prpath, repo) in projects
                     if repo.is_dirty()]
         untracked = [prpath for (wdpath, prpath, repo) in projects
-                     if repo.untracked_files()]
+                     if repo.untracked_files]
+
         if no_remote:
-            local_only = remote_only = None
+            local_only = remote_only = outdated = None
         else:
             local = [prpath for (wdpath, prpath, repo) in projects]
             remote = self.remote_projects(group_path=group_path)
             local_only = [prpath for prpath in local if prpath not in remote]
             remote_only = [prpath for prpath in remote if prpath not in local]
 
+            outdated = []
+            remote_name = self.gitlab.remote_name
+            for (wdpath, prpath, repo) in projects:
+                if prpath in remote:
+                    response = repo.git.remote('show', remote_name)
+                    if response.find('out of date') != -1:
+                        outdated.append(prpath)
+
         status = {}
         if errors: status["errors"] = errors
         if modified: status["modified"] = modified
-        if untracked: status["untracked_files"] = modified
+        if untracked: status["untracked_files"] = untracked
+        if outdated: status["outdated"] = outdated
         if local_only: status["local-only"] = local_only
         if remote_only: status["remote-only"] = remote_only
         return status
@@ -311,7 +322,7 @@ class BulkManager(RESTManager):
                     url = self.get_url(prpath) + '.git'
                     git.Repo.clone_from(url, wdpath)
             except git.GitCommandError as e:
-                m = re.search(r"\bstderr: '?(.*?)(?:\n|$)", str(e))
+                m = re.search(r"\bstderr: '?(.*?)(?:\n|'?$)", str(e))
                 errmsg = m.group(1) if m else str(e)
                 errors[prpath].append('%s: %s' % 
                                       (e.__class__.__name__, errmsg))
