@@ -133,6 +133,11 @@ class BulkManager(RESTManager):
                 "'%s' is not a subdirectory of the current work-dir." % wdpath)
         return self.workdir_group + path[l:]
 
+    def get_url(self, grpath):
+        """Returns the url into repo derived from the group path.
+        """
+        return '%s/%s' % (self.gitlab.url, grpath)
+
 
     def is_project(self, wdpath):
         """Returns True if the path points to (a root of) a git project.
@@ -163,14 +168,14 @@ class BulkManager(RESTManager):
     @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
     def local_projects(self, group_path=None, **kwargs):
         """Returns the list of project path of all projects in the
-        workdir under project-path.
+        workdir under group-path.
         """
-        projects = self.wdprojects(group_path=group_path)
-        return [self.get_grpath(path) for path in projects]
+        return [self.get_grpath(wdpath)
+               for wdpath in self.wdprojects(group_path=group_path)]
 
     @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
     def remote_projects(self, group_path=None, **kwargs):
-        """Returns the list of project path of all remote projects
+        """Returns the list of project paths of all remote projects
         under group-path.
         """
         grpath = group_path or self.workdir_group
@@ -182,9 +187,50 @@ class BulkManager(RESTManager):
                    p.path_with_namespace[l] == '/']
 
     def _get_projects(self, group_path=None):
+        """Returns the list of all local projects under group-path.
+        Each project is represented as a tripple:
+        (workdir-path, project-path, corresponding git Repo object)
+        """
         return [
               (wdpath, self.get_grpath(wdpath), git.Repo(wdpath))
               for wdpath in self.wdprojects(group_path=group_path)]
+
+
+    @cli.register_custom_action('BulkManager', ('group-path', 'workdir-name'))
+    def init(self, group_path, workdir_name, **kwargs):
+        """Initializes the given directory as a root of a working copy
+        for the specified GitLab repo group, its subgroups and projects,
+        The repo url is specified in the current section of 
+        the python-gitlab.cfg,
+        """
+        if self.gitlab.workdir_path:
+            raise exc.GitlabError(
+                    'Cannot create a work-dir within another work-dir.')
+        os.makedirs(workdir_name)
+
+        gl = self.gitlab
+        config = configparser.ConfigParser()
+
+        config.add_section(CFG_SECTION_GLOBAL)
+        config.set(CFG_SECTION_GLOBAL, 'default', 'origin')
+        config.set(CFG_SECTION_GLOBAL, CFG_BASE_GROUP, group_path)
+        if gl.timeout: config.set(CFG_SECTION_GLOBAL, 'timeout', gl.timeout)
+        config.set(CFG_SECTION_GLOBAL, 'api_version', gl.api_version)
+
+        config.add_section('origin')
+        config.set('origin', 'url', gl.url)
+        if gl.ssl_verify: config.set('origin', 'ssl_verify', gl.ssl_verify)
+        if gl.private_token:
+            config.set('origin', 'private_token', gl.private_token)
+        if gl.oauth_token:
+            config.set('origin', 'oauth_token', gl.oauth_token)
+        if gl.http_username:
+            config.set('origin', 'http_username', gl.http_username)
+        if gl.http_password:
+            config.set('origin', 'http_password', gl.http_password)
+
+        f = open(os.path.join(workdir_name, CONFIG_FILE), 'w')
+        config.write(f)
 
 
     @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
@@ -232,6 +278,8 @@ class BulkManager(RESTManager):
         errors = self.errors(group_path=group_path, _projects=projects).keys()
         modified = [prpath for (wdpath, prpath, repo) in projects
                     if repo.is_dirty()]
+        untracked = [prpath for (wdpath, prpath, repo) in projects
+                     if repo.untracked_files()]
         if no_remote:
             local_only = remote_only = None
         else:
@@ -243,46 +291,35 @@ class BulkManager(RESTManager):
         status = {}
         if errors: status["errors"] = errors
         if modified: status["modified"] = modified
+        if untracked: status["untracked_files"] = modified
         if local_only: status["local-only"] = local_only
         if remote_only: status["remote-only"] = remote_only
         return status
 
 
-    @cli.register_custom_action('BulkManager', ('group-path', 'workdir-name'))
-    def init(self, group_path, workdir_name, **kwargs):
-        if self.gitlab.workdir_path:
-            raise exc.GitlabError(
-                    'Cannot create a work-dir within another work-dir.')
-        os.makedirs(workdir_name)
-
-        gl = self.gitlab
-        config = configparser.ConfigParser()
-
-        config.add_section(CFG_SECTION_GLOBAL)
-        config.set(CFG_SECTION_GLOBAL, 'default', 'origin')
-        config.set(CFG_SECTION_GLOBAL, CFG_BASE_GROUP, group_path)
-        if gl.timeout: config.set(CFG_SECTION_GLOBAL, 'timeout', gl.timeout)
-        config.set(CFG_SECTION_GLOBAL, 'api_version', gl.api_version)
-
-        config.add_section('origin')
-        config.set('origin', 'url', gl.url)
-        if gl.ssl_verify: config.set('origin', 'ssl_verify', gl.ssl_verify)
-        if gl.private_token:
-            config.set('origin', 'private_token', gl.private_token)
-        if gl.oauth_token:
-            config.set('origin', 'oauth_token', gl.oauth_token)
-        if gl.http_username:
-            config.set('origin', 'http_username', gl.http_username)
-        if gl.http_password:
-            config.set('origin', 'http_password', gl.http_password)
-
-        f = open(os.path.join(workdir_name, CONFIG_FILE), 'w')
-        config.write(f)
-
-
     @cli.register_custom_action('BulkManager', ('group-path', ))
-    def clone(self, **kwargs):
-        pass
+    def clone(self, group_path=None, **kwargs):
+        projects = [(self.get_wdpath(prpath), prpath)
+                    for prpath in self.remote_projects(group_path=group_path)]
+        errors = {prpath:[] for (wdpath, prpath) in projects}
+        
+        for (wdpath, prpath) in projects:
+            try:
+                if os.path.exists(os.path.join(wdpath, '.git')):
+                    errors[prpath].append('Project already exists.')
+                else:
+                    url = self.get_url(prpath) + '.git'
+                    git.Repo.clone_from(url, wdpath)
+            except git.GitCommandError as e:
+                m = re.search(r"\bstderr: '?(.*?)(?:\n|$)", str(e))
+                errmsg = m.group(1) if m else str(e)
+                errors[prpath].append('%s: %s' % 
+                                      (e.__class__.__name__, errmsg))
+            except Exception as e:
+                errors[prpath].append('%s: %s' % 
+                                      (e.__class__.__name__, str(e)))
+
+        return {prpath:errs for prpath, errs in errors.items() if errs}
 
 
     @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
@@ -306,7 +343,42 @@ class BulkManager(RESTManager):
 
     @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
     def pull(self, group_path=None, **kwargs):
-        pass
+        #TODO
+        projects = self._get_projects(group_path=group_path)
+        errors = {prpath:[] for (wdpath, prpath, repo) in projects}
+        
+        remote_name = self.gitlab.remote_name
+        for (wdpath, prpath, repo) in projects:
+            try:
+                remote = repo.remote(remote_name)
+                remote.pull()
+            except ValueError:
+                errors[prpath].append("Remote alias '%s' is not set." %
+                                      remote_name)
+            except Exception as e:
+                errors[prpath].append('%s: %s' % (e.__class__.__name__, str(e)))
+
+        return {prpath:errs for prpath, errs in errors.items() if errs}
+
+
+    @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
+    def log(self, group_path=None, **kwargs):
+        #TODO
+        projects = self._get_projects(group_path=group_path)
+        errors = {prpath:[] for (wdpath, prpath, repo) in projects}
+        
+        remote_name = self.gitlab.remote_name
+        for (wdpath, prpath, repo) in projects:
+            try:
+                remote = repo.remote(remote_name)
+                remote.log()
+            except ValueError:
+                errors[prpath].append("Remote alias '%s' is not set." %
+                                      remote_name)
+            except Exception as e:
+                errors[prpath].append('%s: %s' % (e.__class__.__name__, str(e)))
+
+        return {prpath:errs for prpath, errs in errors.items() if errs}
 
 
 #    @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
