@@ -13,12 +13,32 @@ import os
 from six.moves import configparser
 import git
 import re
+import sys
 
 
 CONFIG_FILE = '.gitlab'
 CFG_SECTION_GLOBAL = 'global'
 CFG_BASE_GROUP = 'base_group'
 
+
+CSI = '\033['
+
+def print_progress(msg=None, num=0, maxnum=None):
+    if not sys.stdout.isatty():
+        return
+    if msg:
+        print(CSI+'G', end='') #start of line
+        print(msg, end='')
+        if num:
+            pct = '\t%3.f%%' % (num/maxnum*100) if maxnum else num
+            print(': %s' % pct, end='')
+        print(CSI+'J', end='') #clear rest of line
+        sys.stdout.flush()
+    else:
+        print(CSI+'G', end='') #start of line
+        print(CSI+'J', end='') #clear rest of line
+        print(CSI+'G', end='') #start of line
+        sys.stdout.flush()
 
 
 class GitlabCloneError(GitlabError):
@@ -150,18 +170,22 @@ class BulkManager(RESTManager):
         """Returns the list of workdir path of all projects in the
         workdir under project-path.
         """
-        grpath = group_path or self.workdir_group
-        wdpath = self.get_wdpath(grpath)
-        if self.is_project(wdpath):
-            projects = [wdpath]
-        else:
-            projects = []
-            for dirname, dirs, files in os.walk(wdpath):
-                for i in reversed(range(len(dirs))):
-                    path = os.path.join(dirname, dirs[i])
-                    if self.is_project(path):
-                        projects.append(path)
-                        del dirs[i]
+        print_progress("Collecting local projects")
+        try:
+            grpath = group_path or self.workdir_group
+            wdpath = self.get_wdpath(grpath)
+            if self.is_project(wdpath):
+                projects = [wdpath]
+            else:
+                projects = []
+                for dirname, dirs, files in os.walk(wdpath):
+                    for i in reversed(range(len(dirs))):
+                        path = os.path.join(dirname, dirs[i])
+                        if self.is_project(path):
+                            projects.append(path)
+                            del dirs[i]
+        finally:
+            print_progress()
         return projects
 
 
@@ -178,13 +202,18 @@ class BulkManager(RESTManager):
         """Returns the list of project paths of all remote projects
         under group-path.
         """
-        grpath = group_path or self.workdir_group
-        l = len(grpath)
-        return [p.path_with_namespace
-                for p in self.gitlab.projects.list(all=True, simple=True)
-                if p.path_with_namespace == grpath or
-                   p.path_with_namespace.startswith(grpath) and
-                   p.path_with_namespace[l] == '/']
+        print_progress("Collecting remote projects")
+        try:
+            grpath = group_path or self.workdir_group
+            l = len(grpath)
+            projects =  [p.path_with_namespace
+                         for p in self.gitlab.projects.list(all=True, simple=True)
+                         if p.path_with_namespace == grpath or
+                            p.path_with_namespace.startswith(grpath) and
+                            p.path_with_namespace[l] == '/']
+        finally:
+            print_progress()
+        return projects
 
     def _get_projects(self, group_path=None):
         """Returns the list of all local projects under group-path.
@@ -254,6 +283,7 @@ class BulkManager(RESTManager):
 
         remote_name = self.gitlab.remote_name
         for (wdpath, prpath, repo) in projects:
+            print_progress("Collecting error data: " + prpath)
             try:
                 remote = repo.remote('origin')
                 check_remote(remote, wdpath, prpath)
@@ -267,6 +297,7 @@ class BulkManager(RESTManager):
                 errors[prpath].append("Remote alias '%s' is not set." %
                                       remote_name)
             #TODO: project on other branch;...
+        print_progress()
         return {prpath:errs for prpath, errs in errors.items() if errs}
 
 
@@ -277,6 +308,7 @@ class BulkManager(RESTManager):
         projects = self._get_projects(group_path=group_path)
 
         errors = self.errors(group_path=group_path, _projects=projects).keys()
+        print_progress("Processing local data")
         modified = [prpath for (wdpath, prpath, repo) in projects
                     if repo.is_dirty()]
         untracked = [prpath for (wdpath, prpath, repo) in projects
@@ -285,6 +317,7 @@ class BulkManager(RESTManager):
         if no_remote:
             local_only = remote_only = outdated = None
         else:
+            print_progress("Processing remote data")
             local = [prpath for (wdpath, prpath, repo) in projects]
             remote = self.remote_projects(group_path=group_path)
             local_only = [prpath for prpath in local if prpath not in remote]
@@ -293,11 +326,13 @@ class BulkManager(RESTManager):
             outdated = []
             remote_name = self.gitlab.remote_name
             for (wdpath, prpath, repo) in projects:
+                print_progress("Processing remote status: " + prpath)
                 if prpath in remote:
                     response = repo.git.remote('show', remote_name)
                     if response.find('out of date') != -1:
                         outdated.append(prpath)
 
+        print_progress()
         status = {}
         if errors: status["errors"] = errors
         if modified: status["modified"] = modified
@@ -319,6 +354,7 @@ class BulkManager(RESTManager):
                 if os.path.exists(os.path.join(wdpath, '.git')):
                     errors[prpath].append('Project already exists.')
                 else:
+                    print_progress("Processing project:" + prpath)
                     url = self.get_url(prpath) + '.git'
                     git.Repo.clone_from(url, wdpath)
             except git.GitCommandError as e:
@@ -329,51 +365,152 @@ class BulkManager(RESTManager):
             except Exception as e:
                 errors[prpath].append('%s: %s' % 
                                       (e.__class__.__name__, str(e)))
+        print_progress()
 
         return {prpath:errs for prpath, errs in errors.items() if errs}
 
 
-    @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
-    def fetch(self, group_path=None, **kwargs):
+    def _get_remote(self, repo, errors=None):
+        remote_name = self.gitlab.remote_name
+        try:
+            return repo.remote(remote_name)
+        except ValueError:
+            if errors is not None:
+                errors.append("Remote alias '%s' is not set." % remote_name)
+                return None
+            else:
+                raise
+
+
+    def _perform_op_on_remotes(self, group_path, op):
         projects = self._get_projects(group_path=group_path)
+        results = {}
         errors = {prpath:[] for (wdpath, prpath, repo) in projects}
         
         remote_name = self.gitlab.remote_name
         for (wdpath, prpath, repo) in projects:
+            print_progress(prpath)
+            remote = self._get_remote(repo, errors[prpath])
             try:
-                remote = repo.remote(remote_name)
-                remote.fetch()
-            except ValueError:
-                errors[prpath].append("Remote alias '%s' is not set." %
-                                      remote_name)
+                result = op(self, remote, wdpath, prpath, repo)
+                if result:
+                    results[prpath] = result
             except Exception as e:
                 errors[prpath].append('%s: %s' % (e.__class__.__name__, str(e)))
+        print_progress()
 
-        return {prpath:errs for prpath, errs in errors.items() if errs}
-
-
-    @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
-    def pull(self, group_path=None, **kwargs):
-        #TODO
-        projects = self._get_projects(group_path=group_path)
-        errors = {prpath:[] for (wdpath, prpath, repo) in projects}
-        
-        remote_name = self.gitlab.remote_name
-        for (wdpath, prpath, repo) in projects:
-            try:
-                remote = repo.remote(remote_name)
-                remote.pull()
-            except ValueError:
-                errors[prpath].append("Remote alias '%s' is not set." %
-                                      remote_name)
-            except Exception as e:
-                errors[prpath].append('%s: %s' % (e.__class__.__name__, str(e)))
-
-        return {prpath:errs for prpath, errs in errors.items() if errs}
+        resp = errors.copy()
+        for prpath, result in results.items():
+            resp[prpath] = result + resp[prpath]
+        return {prpath:result for prpath, result in resp.items() if result}
 
 
-    @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
-    def log(self, group_path=None, **kwargs):
+    def _yn(self, value):
+        return 'no-' if str(value).lower() == 'false' else ''
+
+
+    def _resolve_fi_flags(self, flags):
+        fl = []
+        info = git.remote.FetchInfo
+        if flags&info.ERROR: fl.append('ERROR')
+        if flags&info.REJECTED: fl.append('REJECTED')
+        if flags&info.NEW_HEAD: fl.append('NEW_HEAD')
+        if flags&info.FAST_FORWARD: fl.append('FAST_FORWARD')
+        if flags&info.FORCED_UPDATE: fl.append('FORCED_UPDATE')
+        if flags&info.HEAD_UPTODATE: fl.append('HEAD_UPTODATE')
+        if flags&info.NEW_TAG: fl.append('NEW_TAG')
+        if flags&info.TAG_UPDATE: fl.append('TAG_UPDATE')
+        return fl
+
+    def _resolve_progress(self, op_code):
+       rp = git.RemoteProgress
+       op = op_code & rp.OP_MASK
+       if op == rp.CHECKING_OUT:
+           msg = 'Checking out'
+       elif op == rp.COMPRESSING:
+           msg = 'Compressing'
+       elif op == rp.COUNTING:
+           msg = 'Counting'
+       elif op == rp.FINDING_SOURCES:
+           msg = 'Finding sources'
+       elif op == rp.RECEIVING:
+           msg = 'Receiving'
+       elif op == rp.RESOLVING:
+           msg = 'Resolving'
+       elif op == rp.WRITING:
+           msg = 'Writing'
+       else:
+           msg = None
+       return msg
+
+
+    @cli.register_custom_action('BulkManager', tuple(), 
+                                ('group-path', 'branch', 'depth', 'deeepen'))
+    def fetch(self, group_path=None, branch='master', **kwargs):
+        pull_args = {}
+
+        def fetch_op(self, remote, wdpath, prpath, repo):
+            if branch.find('/') == -1:
+                #refspec=branch would not return fetch status
+                refspec = '%s:remotes/%s/%s' % (branch, remote.name, branch)
+            else:
+                refspec = branch
+            def progress(op_code, cur_count, max_count=None, message=''):
+               print_progress(
+                       '%s: %s' % (prpath, self._resolve_progress(op_code)),
+                       cur_count, max_count)
+            info = remote.fetch(refspec=refspec, progress=progress, **pull_args)[0]
+            flags = self._resolve_fi_flags(info.flags)
+#            if info.flags not in (0, info.HEAD_UPTODATE):
+            return flags
+        return self._perform_op_on_remotes(group_path, fetch_op)
+
+
+
+    @cli.register_custom_action('BulkManager', tuple(), 
+                                ('group-path', 'branch', 'commit', 'ff',
+                                 'ff-only', 'squash', 'rebase', 'strategy',
+                                 'allow-unrelated-histories', 'sign-off',
+                                 'autostash'))
+    def pull(self, group_path=None, branch='master', commit=None, ff=None,
+             ff_only=False, squash=None, rebase=False, strategy=False,
+             allow_unrelated_histories=False, sign_off=None,
+             autostash=None):
+        pull_args = {}
+        if commit is not None:
+            pull_args[self._yn(commit)+'commit'] = True
+        if ff is not None:
+            pull_args[self._yn(ff)+'ff'] = True
+        if squash is not None:
+            pull_args[self._yn(squash)+'squash'] = True
+        if sign_off is not None:
+            pull_args[self._yn(sign_off)+'sign-off'] = True
+        if autostash is not None:
+            pull_args[self._yn(autostash)+'autostash'] = True
+        pull_args['ff-only'] = ff_only
+        pull_args['rebase'] = rebase
+        pull_args['strategy'] = strategy
+        pull_args['allow-unrelated-histories'] = allow_unrelated_histories
+
+        def pull_op(self, remote, wdpath, prpath, repo):
+            if branch.find('/') == -1:
+                #refspec=branch would not return fetch status
+                refspec = '%s:remotes/%s/%s' % (branch, remote.name, branch)
+            else:
+                refspec = branch
+            def progress(op_code, cur_count, max_count=None, message=''):
+               print_progress(
+                       '%s: %s' % (prpath, self._resolve_progress(op_code)),
+                       cur_count, max_count)
+            info = remote.pull(refspec=refspec, progress=progress, **pull_args)[0]
+            flags = self._resolve_fi_flags(info.flags)
+            if info.flags not in (0, info.HEAD_UPTODATE):
+                return flags
+        return self._perform_op_on_remotes(group_path, pull_op)
+
+
+    @cli.register_custom_action('BulkManager', tuple(), ('group-path', 'branch'))
+    def log(self, group_path=None, branch='master', **kwargs):
         #TODO
         projects = self._get_projects(group_path=group_path)
         errors = {prpath:[] for (wdpath, prpath, repo) in projects}
@@ -399,7 +536,7 @@ class BulkManager(RESTManager):
 
 
 
-
+"""
     @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
     @exc.on_http_error(exc.GitlabGetError)
     def test(self, group_path=None, **kwargs):
@@ -410,3 +547,4 @@ class BulkManager(RESTManager):
         print(group.subgroups.list())
         subgrps = group.subgroups.list()[1].subgroups.list()
         print(subgrps)
+"""
