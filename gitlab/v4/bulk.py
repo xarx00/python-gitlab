@@ -412,6 +412,10 @@ class BulkManager(RESTManager):
     def _yn(self, value):
         return 'no-' if str(value).lower() == 'false' else ''
 
+    def _b(self, value):
+        value = str(value).lower()
+        return True if value == 'true' else False if value == 'false' else value
+
 
     def _resolve_fi_flags(self, flags):
         fl = []
@@ -461,14 +465,14 @@ class BulkManager(RESTManager):
         pull_args = {}
         if recurse_submodules is not None:
             pull_args[self._yn(recurse_submodules)+'recurse-submodules'] = True
-        pull_args['dry-run'] = dry_run
+        pull_args['dry-run'] = self._b(dry_run)
         #options related to fetching
         pull_args['depth'] = depth
         pull_args['deepen'] = deepen
         pull_args['shallow-since'] = shallow_since
-        pull_args['unshallow'] = unshallow
-        pull_args['update-shallow'] = update_shallow
-        pull_args['prune'] = prune
+        pull_args['unshallow'] = self._b(unshallow)
+        pull_args['update-shallow'] = self._b(update_shallow)
+        pull_args['prune'] = self._b(prune)
 
         def fetch_op(self, remote, wdpath, prpath, repo, errors):
             #refspec=branch would not return fetch status
@@ -515,16 +519,16 @@ class BulkManager(RESTManager):
             pull_args[self._yn(sign_off)+'sign-off'] = True
         if autostash is not None:
             pull_args[self._yn(autostash)+'autostash'] = True
-        pull_args['ff-only'] = ff_only
+        pull_args['ff-only'] = self._b(ff_only)
         pull_args['rebase'] = rebase
         pull_args['strategy'] = strategy
-        pull_args['allow-unrelated-histories'] = allow_unrelated_histories
+        pull_args['allow-unrelated-histories'] = self._b(allow_unrelated_histories)
         #options related to fetching
         pull_args['depth'] = depth
         pull_args['deepen'] = deepen
         pull_args['shallow-since'] = shallow_since
-        pull_args['unshallow'] = unshallow
-        pull_args['update-shallow'] = update_shallow
+        pull_args['unshallow'] = self._b(unshallow)
+        pull_args['update-shallow'] = self._b(update_shallow)
 
         def pull_op(self, remote, wdpath, prpath, repo, errors):
             if repo.head.is_detached or repo.active_branch.name != branch:
