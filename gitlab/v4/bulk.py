@@ -70,8 +70,8 @@ class BulkManager(RESTManager):
         for group in groups:
             if group.full_path == grpath:
                 return group
-        raise exc.GitlabGetError("Group '%s' does not exist." % grpath,
-                                 response_code=404)
+        raise GitlabGetError("Group '%s' does not exist." % grpath,
+                             response_code=404)
 
     @cli.register_custom_action('BulkManager', tuple(), ('project-path', ))
     def project(self, project_path=None, **kwargs):
@@ -89,8 +89,8 @@ class BulkManager(RESTManager):
         for project in projects:
             if project.path_with_namespace == project_path:
                 return project
-        raise exc.GitlabGetError("Project '%s' does not exist." % project_path,
-                                 response_code=404)
+        raise GitlabGetError("Project '%s' does not exist." % project_path,
+                             response_code=404)
 
     @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
     def subgroups(self, group_path=None, **kwargs):
@@ -109,7 +109,7 @@ class BulkManager(RESTManager):
     def workdir_group(self):
         wdgroup = self.gitlab.workdir_group
         if not wdgroup:
-            raise exc.GitlabError(
+            raise GitlabError(
                     'The current directory must be within a gitlab work-dir.')
         return wdgroup
 
@@ -117,7 +117,7 @@ class BulkManager(RESTManager):
     def workdir_root(self):
         wdroot = self.gitlab.workdir_path
         if not wdroot:
-            raise exc.GitlabError(
+            raise GitlabError(
                     'The current directory must be within a gitlab work-dir.')
         return wdroot
 
@@ -129,7 +129,7 @@ class BulkManager(RESTManager):
             return self.workdir_root
         l = len(wdgroup)
         if not grpath.startswith(wdgroup) or grpath[l] != '/':
-            raise exc.GitlabError(
+            raise GitlabError(
                     "'%s' is not stored in the current work-dir." % grpath)
         return os.path.join(self.workdir_root, grpath[l+1:])
 
@@ -147,7 +147,7 @@ class BulkManager(RESTManager):
                 return self.workdir_group
         l = len(wdroot)
         if not path.startswith(wdroot) or path[l] != '/':
-            raise exc.GitlabError(
+            raise GitlabError(
                 "'%s' is not a subdirectory of the current work-dir." % wdpath)
         return self.workdir_group + path[l:]
 
@@ -172,7 +172,10 @@ class BulkManager(RESTManager):
         try:
             grpath = group_path or self.workdir_group
             wdpath = self.get_wdpath(grpath)
-            if self.is_project(wdpath):
+            if not os.path.isdir(wdpath):
+                raise GitlabError(
+                    "Group-path '%s' does not correspond to a local group nor project." % grpath)
+            elif self.is_project(wdpath):
                 projects = [wdpath]
             else:
                 projects = []
@@ -231,7 +234,7 @@ class BulkManager(RESTManager):
         the python-gitlab.cfg,
         """
         if self.gitlab.workdir_path:
-            raise exc.GitlabError(
+            raise GitlabError(
                     'Cannot create a work-dir within another work-dir.')
         os.makedirs(workdir_name)
 
@@ -260,8 +263,10 @@ class BulkManager(RESTManager):
         config.write(f)
 
 
-    @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
-    def errors(self, group_path=None, _projects=None, **kwargs):
+    @cli.register_custom_action('BulkManager', tuple(),
+                                ('group-path', 'branch'))
+    def errors(self, group_path=None, branch='master',
+               _projects=None, **kwargs):
         projects = _projects or self._get_projects(group_path=group_path)
         errors = {prpath:[] for (wdpath, prpath, repo) in projects}
 
@@ -282,6 +287,8 @@ class BulkManager(RESTManager):
         remote_name = self.gitlab.remote_name
         for (wdpath, prpath, repo) in projects:
             print_progress("Collecting error data: " + prpath)
+            if repo.head.is_detached or repo.active_branch.name != branch:
+                errors[prpath].append("Current branch is not '%s'" % branch)
             try:
                 remote = repo.remote('origin')
                 check_remote(remote, wdpath, prpath)
@@ -294,7 +301,6 @@ class BulkManager(RESTManager):
             except ValueError:
                 errors[prpath].append("Remote alias '%s' is not set." %
                                       remote_name)
-            #TODO: project on other branch;...
         print_progress()
         return {prpath:errs for prpath, errs in errors.items() if errs}
 
@@ -390,7 +396,7 @@ class BulkManager(RESTManager):
             print_progress(prpath)
             remote = self._get_remote(repo, errors[prpath])
             try:
-                result = op(self, remote, wdpath, prpath, repo)
+                result = op(self, remote, wdpath, prpath, repo, errors[prpath])
                 if result:
                     results[prpath] = result
             except Exception as e:
@@ -464,12 +470,9 @@ class BulkManager(RESTManager):
         pull_args['update-shallow'] = update_shallow
         pull_args['prune'] = prune
 
-        def fetch_op(self, remote, wdpath, prpath, repo):
-            if branch.find('/') == -1:
-                #refspec=branch would not return fetch status
-                refspec = '%s:remotes/%s/%s' % (branch, remote.name, branch)
-            else:
-                refspec = branch
+        def fetch_op(self, remote, wdpath, prpath, repo, errors):
+            #refspec=branch would not return fetch status
+            refspec = '%s:remotes/%s/%s' % (branch, remote.name, branch)
             def progress(op_code, cur_count, max_count=None, message=''):
                print_progress(
                        '%s: %s' % (prpath, self._resolve_progress(op_code)),
@@ -523,12 +526,12 @@ class BulkManager(RESTManager):
         pull_args['unshallow'] = unshallow
         pull_args['update-shallow'] = update_shallow
 
-        def pull_op(self, remote, wdpath, prpath, repo):
-            if branch.find('/') == -1:
-                #refspec=branch would not return fetch status
-                refspec = '%s:remotes/%s/%s' % (branch, remote.name, branch)
-            else:
-                refspec = branch
+        def pull_op(self, remote, wdpath, prpath, repo, errors):
+            if repo.head.is_detached or repo.active_branch.name != branch:
+                errors.append("Current branch is not '%s'" % branch)
+                return
+            #refspec=branch would not return fetch status
+            refspec = '%s:remotes/%s/%s' % (branch, remote.name, branch)
             def progress(op_code, cur_count, max_count=None, message=''):
                print_progress(
                        '%s: %s' % (prpath, self._resolve_progress(op_code)),
@@ -569,7 +572,6 @@ class BulkManager(RESTManager):
 
 """
     @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
-    @exc.on_http_error(exc.GitlabGetError)
     def test(self, group_path=None, **kwargs):
         gl = self.gitlab
 
