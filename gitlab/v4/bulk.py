@@ -2,18 +2,15 @@
 from __future__ import print_function
 from __future__ import absolute_import
 import base64
+import os
+import sys
+import re
 
 from gitlab.base import *  # noqa
 from gitlab import cli
 from gitlab.exceptions import *  # noqa
-from gitlab.mixins import *  # noqa
-from gitlab import types
-from gitlab import utils
-import os
 from six.moves import configparser
 import git
-import re
-import sys
 
 
 CONFIG_FILE = '.gitlab'
@@ -21,9 +18,9 @@ CFG_SECTION_GLOBAL = 'global'
 CFG_BASE_GROUP = 'base_group'
 
 
-CSI = '\033['
 
 def print_progress(msg=None, num=0, maxnum=None):
+    CSI = '\033['
     if not sys.stdout.isatty():
         return
     if msg:
@@ -39,6 +36,7 @@ def print_progress(msg=None, num=0, maxnum=None):
         print(CSI+'J', end='') #clear rest of line
         print(CSI+'G', end='') #start of line
         sys.stdout.flush()
+
 
 
 class GitlabCloneError(GitlabError):
@@ -444,10 +442,27 @@ class BulkManager(RESTManager):
        return msg
 
 
-    @cli.register_custom_action('BulkManager', tuple(), 
-                                ('group-path', 'branch', 'depth', 'deeepen'))
-    def fetch(self, group_path=None, branch='master', **kwargs):
+    @cli.register_custom_action('BulkManager', tuple(), (
+              'group-path', 'branch', 'recurse-submodules', 'dry-run',
+              #options related to fetching
+              'depth', 'deepen', 'shallow-since', 'unshallow',
+              'update-shallow', 'prune'))
+    def fetch(self, group_path=None, branch='master', recurse_submodules=None,
+              dry_run=False,
+              #options related to fetchig
+              depth=False, deepen=False, shallow_since=False, unshallow=False,
+              update_shallow=False, prune=False):
         pull_args = {}
+        if recurse_submodules is not None:
+            pull_args[self._yn(recurse_submodules)+'recurse-submodules'] = True
+        pull_args['dry-run'] = dry_run
+        #options related to fetching
+        pull_args['depth'] = depth
+        pull_args['deepen'] = deepen
+        pull_args['shallow-since'] = shallow_since
+        pull_args['unshallow'] = unshallow
+        pull_args['update-shallow'] = update_shallow
+        pull_args['prune'] = prune
 
         def fetch_op(self, remote, wdpath, prpath, repo):
             if branch.find('/') == -1:
@@ -461,22 +476,32 @@ class BulkManager(RESTManager):
                        cur_count, max_count)
             info = remote.fetch(refspec=refspec, progress=progress, **pull_args)[0]
             flags = self._resolve_fi_flags(info.flags)
-#            if info.flags not in (0, info.HEAD_UPTODATE):
-            return flags
+            if info.flags not in (0, info.HEAD_UPTODATE):
+                return flags
         return self._perform_op_on_remotes(group_path, fetch_op)
 
 
 
-    @cli.register_custom_action('BulkManager', tuple(), 
-                                ('group-path', 'branch', 'commit', 'ff',
-                                 'ff-only', 'squash', 'rebase', 'strategy',
-                                 'allow-unrelated-histories', 'sign-off',
-                                 'autostash'))
-    def pull(self, group_path=None, branch='master', commit=None, ff=None,
-             ff_only=False, squash=None, rebase=False, strategy=False,
-             allow_unrelated_histories=False, sign_off=None,
-             autostash=None):
+    @cli.register_custom_action('BulkManager', tuple(), (
+             'group-path', 'branch', 'recurse-submodules',
+             #options related to merging
+             'commit', 'ff', 'ff-only', 'squash', 'rebase', 'strategy',
+             'allow-unrelated-histories', 'sign-off', 'autostash',
+             #options related to fetching
+             'depth', 'deepen', 'shallow-since', 'unshallow',
+             'update-shallow'))
+    def pull(self, group_path=None, branch='master', recurse_submodules=None,
+             #options related to merging
+             commit=None, ff=None, ff_only=False, squash=None, rebase=False,
+             strategy=False, allow_unrelated_histories=False, sign_off=None,
+             autostash=None,
+             #options related to fetchig
+             depth=False, deepen=False, shallow_since=False, unshallow=False,
+             update_shallow=False):
         pull_args = {}
+        if recurse_submodules is not None:
+            pull_args[self._yn(recurse_submodules)+'recurse-submodules'] = True
+        #options related to merging
         if commit is not None:
             pull_args[self._yn(commit)+'commit'] = True
         if ff is not None:
@@ -491,6 +516,12 @@ class BulkManager(RESTManager):
         pull_args['rebase'] = rebase
         pull_args['strategy'] = strategy
         pull_args['allow-unrelated-histories'] = allow_unrelated_histories
+        #options related to fetching
+        pull_args['depth'] = depth
+        pull_args['deepen'] = deepen
+        pull_args['shallow-since'] = shallow_since
+        pull_args['unshallow'] = unshallow
+        pull_args['update-shallow'] = update_shallow
 
         def pull_op(self, remote, wdpath, prpath, repo):
             if branch.find('/') == -1:
