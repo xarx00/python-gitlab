@@ -263,60 +263,122 @@ class BulkManager(RESTManager):
         config.write(f)
 
 
+    def get_submodule_remote_branch(self, sm, repo):
+        if sm.branch is None:
+            return None
+        elif sm.branch.name == '.':
+            return repo.active_branch.name if not repo.head.is_detached else None
+        else:
+            return sm.branch.name
+
+
     @cli.register_custom_action('BulkManager', tuple(),
-                                ('group-path', 'branch'))
-    def errors(self, group_path=None, branch='master',
+                                ('group-path', 'no-remote', 'branch'))
+    def errors(self, group_path=None, no_remote=False, branch=None,
                _projects=None, **kwargs):
         projects = _projects or self._get_projects(group_path=group_path)
         errors = {prpath:[] for (wdpath, prpath, repo) in projects}
 
-        pat_grpath = re.compile(r'.*?//[^/]+/(.*)\.git$')
-
-        def check_remote(remote, wdpath, prpath):
-            url = remote.url
-            m = pat_grpath.match(url)
-            if m:
-                grpath = m.group(1)
-                if grpath != prpath:
-                    errors[prpath].append(
-             "Project workdir location does not correspond to its '%s' repository location '%s'." % (remote_name, grpath))
-            else:
-                    errors[prpath].append(
-                              "Cannot parse project url '%s'." % url)
+        pat_grpath = re.compile(r'(.*?//[^/]+)/(.*)\.git$')
 
         remote_name = self.gitlab.remote_name
         for (wdpath, prpath, repo) in projects:
             print_progress("Collecting error data: " + prpath)
-            if repo.head.is_detached or repo.active_branch.name != branch:
-                errors[prpath].append("Current branch is not '%s'" % branch)
+
+            if repo.head.is_detached:
+                errors[prpath].append("Current HEAD is detached.")
+            elif branch is not None and repo.active_branch.name != branch:
+                errors[prpath].append("Current branch is '%s', not '%s'." %
+                                      (repo.active_branch.name, branch))
+
+            for sm in repo.submodules:
+                if sm.exists():
+                    smrepo = sm.module()
+                    if smrepo.head.is_detached:
+                        errors[prpath].append("Submodule '%s' has detached HEAD." % sm.name)
+                    else:
+                        sm_branch = self.get_submodule_remote_branch(sm, repo)
+                        if sm_branch is not None and sm_branch != smrepo.active_branch.name:
+                            errors[prpath].append(
+             "Submodule '%s' is not at the branch configured in the superproject." % sm.name)
+
+            remote = None
             try:
                 remote = repo.remote('origin')
-                check_remote(remote, wdpath, prpath)
             except ValueError:
                 errors[prpath].append("Remote alias 'origin' is not set.")
             try:
-                if remote_name != 'origin':
+                if remote_name != 'origin': #do not check 'origin' again
                     remote = repo.remote(remote_name)
-                    check_remote(remote, wdpath, prpath)
             except ValueError:
                 errors[prpath].append("Remote alias '%s' is not set." %
                                       remote_name)
+
+            #remote now should correspond to the remote_name
+            if remote is not None:
+                m = pat_grpath.match(remote.url)
+                if m:
+                    if m.group(1) != self.gitlab.url:
+                        errors[prpath].append(
+                 "Remote '%s' server url '%s' does not correspond to the current GitLab server url '%s'." % (remote.name, m.group(1), self.gitlab.url))
+                    else:
+                        grpath = m.group(2)
+                        if grpath != prpath:
+                            errors[prpath].append(
+                 "Local repo/workdir location does not correspond to its '%s' remote repo location '%s'." % (remote_name, grpath))
+                else:
+                        errors[prpath].append(
+                                  "Cannot parse project url '%s'." % url)
+            repo.git.clear_cache()
+
         print_progress()
         return {prpath:errs for prpath, errs in errors.items() if errs}
 
 
     @cli.register_custom_action('BulkManager', tuple(),
                                 ('group-path', 'no-remote', 'branch'))
-    def status(self, group_path=None, no_remote=False, branch='master',
+    def status(self, group_path=None, no_remote=False, branch=None,
                **kwargs):
         projects = self._get_projects(group_path=group_path)
 
-        errors = self.errors(group_path=group_path, _projects=projects).keys()
-        print_progress("Processing local data")
-        modified = [prpath for (wdpath, prpath, repo) in projects
-                    if repo.is_dirty()]
-        untracked = [prpath for (wdpath, prpath, repo) in projects
-                     if repo.untracked_files]
+        errors = self.errors(group_path=group_path, no_remote=no_remote,
+                             branch=branch, _projects=projects).keys()
+        modified = []
+        untracked = []
+        for (wdpath, prpath, repo) in projects:
+            print_progress("Processing local status: " + prpath)
+            if repo.is_dirty():
+                modified.append(prpath)
+            if repo.untracked_files:
+                untracked.append(prpath)
+
+        #Non-pushed repos
+        non_pushed = []
+        for (wdpath, prpath, repo) in projects:
+            print_progress("Processing push status: " + prpath)
+            needs_push = False
+            response = repo.git.branch(v=True)
+            if not repo.head.is_detached:
+	            pat_start = r'^(?:\*|\s*' + repo.active_branch.name + r'\s)'
+            else:
+	            pat_start = r'^\*'
+            pat = re.compile(pat_start + r'[^\[]*\[ahead', re.M)
+            if pat.search(response):
+                needs_push = True
+            else:
+                for sm in repo.submodules:
+                    if sm.exists():
+                        smrepo = sm.module()
+                        response = smrepo.git.branch(v=True)
+                        sm_branch = self.get_submodule_remote_branch(sm, repo)
+                        if sm_branch is not None:
+                            pat = re.compile(r'^\*?\s*' + sm_branch + r'[^\[]*\[ahead', re.M)
+                            if pat.search(response):
+                                needs_push = True
+                                break
+            if needs_push:
+                non_pushed.append(prpath)
+            repo.git.clear_cache()
 
         if no_remote:
             local_only = remote_only = outdated = None
@@ -324,6 +386,7 @@ class BulkManager(RESTManager):
             print_progress("Processing remote data")
             local = [prpath for (wdpath, prpath, repo) in projects]
             remote = self.remote_projects(group_path=group_path)
+            #TODO local_only: compare repo remote location, not prpath
             local_only = [prpath for prpath in local if prpath not in remote]
             remote_only = [prpath for prpath in remote if prpath not in local]
 
@@ -341,6 +404,7 @@ class BulkManager(RESTManager):
         if errors: status["errors"] = errors
         if modified: status["modified"] = modified
         if untracked: status["untracked_files"] = untracked
+        if non_pushed: status["need_push"] = non_pushed
         if outdated: status["outdated"] = outdated
         if local_only: status["local-only"] = local_only
         if remote_only: status["remote-only"] = remote_only
