@@ -16,10 +16,13 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import os
+import sys
+if sys.version_info >= (3,):
+    os.getcwdu = os.getcwd
 
 from six.moves import configparser
 
-_WORKDIR_CONFIG_ALIAS = '-'
+_WORKDIR_CONFIG_ALIAS = '@'
 _DEFAULT_FILES = [
     '/etc/python-gitlab.cfg',
     os.path.expanduser('~/.python-gitlab.cfg')
@@ -62,7 +65,7 @@ class GitlabConfigParser(object):
         if _WORKDIR_CONFIG_ALIAS in config_files:
             config_files = [f for f in config_files
                             if f != _WORKDIR_CONFIG_ALIAS]
-            wd_files = [f for d in _get_path_ancestors(os.getcwd())
+            wd_files = [f for d in _get_path_ancestors(os.getcwdu())
                       for f in (d+'/.python-gitlab.cfg', d+'/.gitlab')
                       if os.path.isfile(f)]
             if wd_files:

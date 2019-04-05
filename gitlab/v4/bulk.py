@@ -416,10 +416,10 @@ class BulkManager(RESTManager):
         projects = [(self.get_wdpath(prpath), prpath)
                     for prpath in self.remote_projects(group_path=group_path)]
         errors = {prpath:[] for (wdpath, prpath) in projects}
-        
+
         for (wdpath, prpath) in projects:
             try:
-                if os.path.exists(os.path.join(wdpath, '.git')):
+                if os.path.exists(os.path.join(wdpath, u'.git')):
                     errors[prpath].append('Project already exists.')
                 else:
                     print_progress("Processing project:" + prpath)
