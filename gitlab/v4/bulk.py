@@ -10,6 +10,11 @@ from gitlab.base import *  # noqa
 from gitlab import cli
 from gitlab.exceptions import *  # noqa
 from six.moves import configparser
+
+if sys.version_info < (3,):
+    #workaround for the issue in GitPython with non-ascii filenames
+    reload(sys) # makes sys.setdefaultencoding() visible
+    sys.setdefaultencoding(sys.getfilesystemencoding())
 import git
 
 
@@ -432,7 +437,7 @@ class BulkManager(RESTManager):
                                       (e.__class__.__name__, errmsg))
             except Exception as e:
                 errors[prpath].append('%s: %s' % 
-                                      (e.__class__.__name__, str(e)))
+                                      (e.__class__.__name__, e.message))	
         print_progress()
 
         return {prpath:errs for prpath, errs in errors.items() if errs}
