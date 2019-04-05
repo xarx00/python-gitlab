@@ -1,6 +1,6 @@
-
 from __future__ import print_function
 from __future__ import absolute_import
+from builtins import str
 import base64
 import os
 import sys
@@ -424,7 +424,7 @@ class BulkManager(RESTManager):
 
         for (wdpath, prpath) in projects:
             try:
-                if os.path.exists(os.path.join(wdpath, u'.git')):
+                if os.path.exists(os.path.join(wdpath, '.git')):
                     errors[prpath].append('Project already exists.')
                 else:
                     print_progress("Processing project:" + prpath)

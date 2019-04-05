@@ -15,10 +15,8 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+from builtins import str
 import os
-import sys
-if sys.version_info >= (3,):
-    os.getcwdu = os.getcwd
 
 from six.moves import configparser
 
@@ -65,7 +63,7 @@ class GitlabConfigParser(object):
         if config_files and _WORKDIR_CONFIG_ALIAS in config_files:
             config_files = [f for f in config_files
                             if f != _WORKDIR_CONFIG_ALIAS]
-            wd_files = [f for d in _get_path_ancestors(os.getcwdu())
+            wd_files = [f for d in _get_path_ancestors(os.getcwd())
                       for f in (d+'/.python-gitlab.cfg', d+'/.gitlab')
                       if os.path.isfile(f)]
             if wd_files:
