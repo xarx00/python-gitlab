@@ -62,7 +62,7 @@ class GitlabConfigParser(object):
     def __init__(self, gitlab_id=None, config_files=None):
         self.gitlab_id = gitlab_id
         self.base_path = None
-        if _WORKDIR_CONFIG_ALIAS in config_files:
+        if config_files and _WORKDIR_CONFIG_ALIAS in config_files:
             config_files = [f for f in config_files
                             if f != _WORKDIR_CONFIG_ALIAS]
             wd_files = [f for d in _get_path_ancestors(os.getcwdu())
