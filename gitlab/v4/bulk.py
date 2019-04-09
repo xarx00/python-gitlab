@@ -298,7 +298,7 @@ class BulkManager(RESTManager):
                                       (repo.active_branch.name, branch))
 
             for sm in repo.submodules:
-                if sm.exists():
+                if sm.module_exists():
                     smrepo = sm.module()
                     if smrepo.head.is_detached:
                         errors[prpath].append("Submodule '%s' has detached HEAD." % sm.name)
@@ -373,7 +373,7 @@ class BulkManager(RESTManager):
                 needs_push = True
             else:
                 for sm in repo.submodules:
-                    if sm.exists():
+                    if sm.module_exists():
                         smrepo = sm.module()
                         response = smrepo.git.branch(v=True)
                         sm_branch = self.get_submodule_remote_branch(sm, repo)
