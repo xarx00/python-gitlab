@@ -204,23 +204,29 @@ class BulkManager(RESTManager):
         return [self.get_grpath(wdpath)
                for wdpath in self.wdprojects(group_path=group_path)]
 
-    @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
-    def remote_projects(self, group_path=None, **kwargs):
-        """Returns the list of project paths of all remote projects
-        under group-path.
+    def _remote_projects(self, group_path=None, **kwargs):
+        """Returns the list of all remote projects under group-path
+        as objects.
         """
         print_progress("Collecting remote projects")
         try:
             grpath = group_path or self.workdir_group
             l = len(grpath)
-            projects =  [p.path_with_namespace
-                         for p in self.gitlab.projects.list(all=True, simple=True)
-                         if p.path_with_namespace == grpath or
-                            p.path_with_namespace.startswith(grpath) and
-                            p.path_with_namespace[l] == '/']
+            remote = [p for p in self.gitlab.projects.list(all=True, simple=True)
+                      if p.path_with_namespace == grpath or
+                         p.path_with_namespace.startswith(grpath) and
+                         p.path_with_namespace[l] == '/']
         finally:
             print_progress()
-        return projects
+        return remote
+
+    @cli.register_custom_action('BulkManager', tuple(), ('group-path', ))
+    def remote_projects(self, group_path=None, _remote=None, **kwargs):
+        """Returns the list of project paths of all remote projects
+        under group-path.
+        """
+        remote = _remote or self._remote_projects(group_path=group_path)
+        return [p.path_with_namespace for p in remote]
 
     def _get_projects(self, group_path=None):
         """Returns the list of all local projects under group-path.
@@ -280,7 +286,7 @@ class BulkManager(RESTManager):
 
     @cli.register_custom_action('BulkManager', tuple(),
                                 ('group-path', 'no-remote', 'branch'))
-    def errors(self, group_path=None, no_remote=False, branch=None,
+    def git_errors(self, group_path=None, no_remote=False, branch=None,
                _projects=None, **kwargs):
         projects = _projects or self._get_projects(group_path=group_path)
         errors = {prpath:[] for (wdpath, prpath, repo) in projects}
@@ -342,13 +348,73 @@ class BulkManager(RESTManager):
 
 
     @cli.register_custom_action('BulkManager', tuple(),
-                                ('group-path', 'no-remote', 'branch'))
-    def status(self, group_path=None, no_remote=False, branch=None,
-               **kwargs):
+                                ('group-path', 'branch'))
+    def ci_status(self, group_path=None, branch=None,
+               _projects=None, _remote=None, **kwargs):
+        projects = _projects or self._get_projects(group_path=group_path)
+        local = [prpath for (wdpath, prpath, repo) in projects]
+        remote = _remote or self._remote_projects(group_path=group_path)
+        remote = [p for p in remote if p.path_with_namespace in local]
+
+        statuses = {}
+        def add_status(status, prpath):
+            projects = statuses.get(status)
+            if projects is None:
+                projects = []
+                statuses[status] = projects
+            projects.append(prpath)
+
+        for p in remote:
+            prpath = p.path_with_namespace
+            print_progress("Processing CI status: " + prpath)
+
+            #find last relevant pipeline
+            bpipelines = p.pipelines.list(scope="branches", ref=branch,
+                                          #take only the last run
+                                          page=1, per_page=1, sort="desc")
+            tpipelines = p.pipelines.list(scope="tags",
+                                          #take only the last run
+                                          page=1, per_page=1, sort="desc")
+            pipelines = bpipelines + tpipelines
+            if not pipelines:
+                add_status("no-pipeline", prpath)
+                continue
+            pipelines.sort(key=lambda x: x.id, reverse=True)
+            pipeline = pipelines[0]
+
+            #check the pipeline status
+            if pipeline.status != "failed":
+                add_status(pipeline.status, prpath)
+                continue
+            #failed
+            pipeline = p.pipelines.get(id=pipeline.id)
+            if pipeline.yaml_errors:
+                add_status("yaml-errors", prpath)
+                continue
+            jobs = pipeline.jobs.list(scope="failed",
+                                      #take only the last failed job
+                                      page=1, per_page=1, sort="desc")
+            job = jobs[0]
+            add_status("failed in stage '%s'" % job.stage, prpath)
+
+        print_progress()
+        return statuses
+
+
+    @cli.register_custom_action('BulkManager', tuple(),
+                                ('group-path', 'branch', 'no-remote',
+                                 'no-push-status', 'no-pull-status',
+                                 'no-git-errors', 'no-ci-errors'))
+    def status(self, group_path=None, branch=None, no_remote=False,
+               no_push_status=False, no_pull_status=False,
+               no_git_errors=False, no_ci_errors=False, **kwargs):
         projects = self._get_projects(group_path=group_path)
 
-        errors = self.errors(group_path=group_path, no_remote=no_remote,
-                             branch=branch, _projects=projects).keys()
+        if no_git_errors:
+            git_errors = None
+        else:
+            git_errors = self.git_errors(group_path=group_path, no_remote=no_remote,
+                                         branch=branch, _projects=projects).keys()
         modified = []
         untracked = []
         for (wdpath, prpath, repo) in projects:
@@ -360,60 +426,72 @@ class BulkManager(RESTManager):
 
         #Non-pushed repos
         non_pushed = []
-        for (wdpath, prpath, repo) in projects:
-            print_progress("Processing push status: " + prpath)
-            needs_push = False
-            response = repo.git.branch(v=True)
-            if not repo.head.is_detached:
-	            pat_start = r'^(?:\*|\s*' + repo.active_branch.name + r'\s)'
-            else:
-	            pat_start = r'^\*'
-            pat = re.compile(pat_start + r'[^\[]*\[ahead', re.M)
-            if pat.search(response):
-                needs_push = True
-            else:
-                for sm in repo.submodules:
-                    if sm.module_exists():
-                        smrepo = sm.module()
-                        response = smrepo.git.branch(v=True)
-                        sm_branch = self.get_submodule_remote_branch(sm, repo)
-                        if sm_branch is not None:
-                            pat = re.compile(r'^\*?\s*' + sm_branch + r'[^\[]*\[ahead', re.M)
-                            if pat.search(response):
-                                needs_push = True
-                                break
-            if needs_push:
-                non_pushed.append(prpath)
-            repo.git.clear_cache()
+        if not no_push_status:
+            for (wdpath, prpath, repo) in projects:
+                print_progress("Processing push status: " + prpath)
+                needs_push = False
+                response = repo.git.branch(v=True)
+                if not repo.head.is_detached:
+    	            pat_start = r'^(?:\*|\s*' + repo.active_branch.name + r'\s)'
+                else:
+    	            pat_start = r'^\*'
+                pat = re.compile(pat_start + r'[^\[]*\[ahead', re.M)
+                if pat.search(response):
+                    needs_push = True
+                else:
+                    for sm in repo.submodules:
+                        if sm.module_exists():
+                            smrepo = sm.module()
+                            response = smrepo.git.branch(v=True)
+                            sm_branch = self.get_submodule_remote_branch(sm, repo)
+                            if sm_branch is not None:
+                                pat = re.compile(r'^\*?\s*' + sm_branch + r'[^\[]*\[ahead', re.M)
+                                if pat.search(response):
+                                    needs_push = True
+                                    break
+                if needs_push:
+                    non_pushed.append(prpath)
+                repo.git.clear_cache()
 
         if no_remote:
-            local_only = remote_only = outdated = None
+            local_only = remote_only = outdated = ci_errors = None
         else:
             print_progress("Processing remote data")
             local = [prpath for (wdpath, prpath, repo) in projects]
-            remote = self.remote_projects(group_path=group_path)
+            _remote = self._remote_projects(group_path=group_path)
+            remote = self.remote_projects(group_path=group_path, _remote=_remote)
             #TODO local_only: compare repo remote location, not prpath
             local_only = [prpath for prpath in local if prpath not in remote]
             remote_only = [prpath for prpath in remote if prpath not in local]
 
             outdated = []
-            remote_name = self.gitlab.remote_name
-            for (wdpath, prpath, repo) in projects:
-                print_progress("Processing remote status: " + prpath)
-                if prpath in remote:
-                    response = repo.git.remote('show', remote_name)
-                    if response.find('out of date') != -1:
-                        outdated.append(prpath)
+            if not no_pull_status:
+                remote_name = self.gitlab.remote_name
+                for (wdpath, prpath, repo) in projects:
+                    print_progress("Processing remote status: " + prpath)
+                    if prpath in remote:
+                        response = repo.git.remote('show', remote_name)
+                        if response.find('out of date') != -1:
+                            outdated.append(prpath)
+            if not no_ci_errors:
+                ci_status = self.ci_status(group_path=group_path, branch=branch,
+                                           _projects=projects, _remote=_remote)
+                ci_errors = []
+                for key, errs in ci_status.items():
+                    if key.startswith('failed') or key == 'yaml-errors':
+                        ci_errors += errs
+                ci_errors = list(sorted(set(ci_errors)))
 
         print_progress()
         status = {}
-        if errors: status["errors"] = errors
+        if git_errors: status["git-errors"] = git_errors
         if modified: status["modified"] = modified
-        if untracked: status["untracked_files"] = untracked
+        if untracked: status["untracked-files"] = untracked
         if non_pushed: status["need_push"] = non_pushed
         if outdated: status["outdated"] = outdated
         if local_only: status["local-only"] = local_only
         if remote_only: status["remote-only"] = remote_only
+        if ci_errors: status["ci-errors"] = ci_errors
         return status
 
 
@@ -425,6 +503,7 @@ class BulkManager(RESTManager):
 
         for (wdpath, prpath) in projects:
             try:
+                #TODO: "project exists" is not an erro, instead return the list of updated projects
                 if os.path.exists(os.path.join(wdpath, '.git')):
                     errors[prpath].append('Project already exists.')
                 else:
